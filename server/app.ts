@@ -3,8 +3,6 @@ import cors from 'cors';
 import crypto from 'node:crypto';
 import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
-import OpenAI from 'openai';
-import Razorpay from 'razorpay';
 import { z } from 'zod';
 import {
   db,
@@ -34,6 +32,7 @@ import {
   Subscription,
 } from './types.js';
 
+dotenv.config({ path: '.env.local' });
 dotenv.config();
 
 export interface AuthenticatedRequest extends Request {
@@ -42,25 +41,109 @@ export interface AuthenticatedRequest extends Request {
   orgRole?: string;
 }
 
-function isOpenAIConfigured(): boolean {
-  const key = process.env.OPENAI_API_KEY || '';
-  return Boolean(key && key.startsWith('sk-') && !key.includes('your-openai'));
-}
-
-function isRazorpayConfigured(): boolean {
-  const keyId = process.env.RAZORPAY_KEY_ID || process.env.VITE_RAZORPAY_KEY_ID || '';
-  const keySecret = process.env.RAZORPAY_KEY_SECRET || '';
-  return Boolean(
-    keyId &&
-      keySecret &&
-      !keyId.includes('your_key_id') &&
-      !keySecret.includes('your_razorpay')
-  );
+export function isGeminiConfigured(): boolean {
+  const key = (process.env.GEMINI_API_KEY || '').trim();
+  return Boolean(key && key.length > 10 && !key.includes('your_gemini'));
 }
 
 function isEmailConfigured(): boolean {
   const key = process.env.RESEND_API_KEY || '';
   return Boolean(key && !key.includes('your_'));
+}
+
+async function generateWithGemini(params: {
+  systemInstruction: string;
+  history: Array<{ role?: string; text?: string }>;
+  userMessage: string;
+}): Promise<{ answer: string; requestedModel: string; resolvedModel: string }> {
+  const apiKey = (process.env.GEMINI_API_KEY || '').trim();
+  const requestedModel = (process.env.GEMINI_MODEL || 'gemini-3.8-flash').trim();
+  const candidateModels = Array.from(
+    new Set([requestedModel, 'gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash'])
+  );
+
+  const contents = [
+    ...params.history.slice(-6).map((m) => ({
+      role: m.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: String(m.text || '') }],
+    })),
+    {
+      role: 'user',
+      parts: [{ text: params.userMessage }],
+    },
+  ];
+
+  let lastError = 'Gemini API request failed';
+
+  for (const modelName of candidateModels) {
+    const cleanModel = modelName.replace(/^models\//, '');
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+      cleanModel
+    )}:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(10000),
+        body: JSON.stringify({
+          systemInstruction: {
+            parts: [{ text: params.systemInstruction }],
+          },
+          contents,
+          generationConfig: {
+            temperature: 0.2,
+            maxOutputTokens: 1024,
+          },
+        }),
+      });
+
+      if (
+        (response.status === 404 || response.status === 400) &&
+        modelName !== candidateModels[candidateModels.length - 1]
+      ) {
+        continue;
+      }
+
+      if (!response.ok) {
+        const errText = await response.text();
+        if (response.status === 429) {
+          lastError = 'Gemini API rate limit exceeded (HTTP 429). Please retry in a moment.';
+          continue;
+        }
+        lastError = `Gemini API HTTP ${response.status}: ${errText.slice(0, 300)}`;
+        continue;
+      }
+
+      const data = (await response.json()) as {
+        candidates?: Array<{
+          content?: { parts?: Array<{ text?: string }> };
+        }>;
+      };
+
+      const text =
+        data.candidates?.[0]?.content?.parts
+          ?.map((p) => p.text || '')
+          .join('')
+          .trim() || '';
+
+      if (!text) {
+        lastError = 'Gemini API returned an empty response candidate.';
+        continue;
+      }
+
+      return {
+        answer: text,
+        requestedModel,
+        resolvedModel: cleanModel,
+      };
+    } catch (err: unknown) {
+      lastError = err instanceof Error ? err.message : 'Gemini fetch error';
+      continue;
+    }
+  }
+
+  throw new Error(lastError);
 }
 
 export function createApp() {
@@ -73,13 +156,9 @@ export function createApp() {
     })
   );
 
-  // Capture raw body for webhook signature verification while parsing JSON
   app.use(
     express.json({
       limit: '1mb',
-      verify: (req: Request & { rawBody?: string }, _res, buf) => {
-        req.rawBody = buf.toString('utf8');
-      },
     })
   );
 
@@ -106,13 +185,18 @@ export function createApp() {
   // HEALTH & INTEGRATION CONFIGURATION STATUS
   // --------------------------------------------------------------------------
   app.get('/api/health', (_req, res) => {
+    const sbStatus = db.getSupabaseStatus();
     res.json({
       status: 'ok',
       timestamp: new Date().toISOString(),
       integrations: {
         supabase: isSupabaseConfigured(),
-        openai: isOpenAIConfigured(),
-        razorpay: isRazorpayConfigured(),
+        supabaseConnected: sbStatus.connected,
+        supabasePersistenceMode: sbStatus.persistenceMode,
+        supabaseUrl: sbStatus.url,
+        gemini: isGeminiConfigured(),
+        geminiModel: process.env.GEMINI_MODEL || 'gemini-3.8-flash',
+        paymentsMode: 'demo_only',
         email: isEmailConfigured(),
       },
     });
@@ -327,6 +411,7 @@ export function createApp() {
     });
 
     db.commit();
+    void db.syncUserToSupabaseAuth(normalizedEmail, password, full_name.trim(), orgId, userId);
 
     const token = signToken(userId, normalizedEmail);
     res.status(201).json({
@@ -428,6 +513,7 @@ export function createApp() {
       userOrgs.find((o) => o.id === user.default_organization_id) ||
       userOrgs[0] ||
       null;
+    const sbStatus = db.getSupabaseStatus();
 
     res.json({
       user: sanitizeProfile(user),
@@ -435,9 +521,12 @@ export function createApp() {
       activeOrganization: activeOrg,
       integrations: {
         supabase: isSupabaseConfigured(),
-        openai: isOpenAIConfigured(),
-        razorpay: isRazorpayConfigured(),
-        razorpayKeyId: process.env.RAZORPAY_KEY_ID || process.env.VITE_RAZORPAY_KEY_ID || null,
+        supabaseConnected: sbStatus.connected,
+        supabasePersistenceMode: sbStatus.persistenceMode,
+        supabaseUrl: sbStatus.url,
+        gemini: isGeminiConfigured(),
+        geminiModel: process.env.GEMINI_MODEL || 'gemini-3.8-flash',
+        paymentsMode: 'demo_only',
         email: isEmailConfigured(),
       },
     });
@@ -1894,7 +1983,7 @@ export function createApp() {
   });
 
   // --------------------------------------------------------------------------
-  // PAYMENTS, RAZORPAY TEST MODE & WEBHOOKS
+  // PAYMENTS — DEMO MODE SIMULATOR ONLY (NO REAL PAYMENT GATEWAY)
   // --------------------------------------------------------------------------
   app.get('/api/payments', requireOrgAccess, (req: AuthenticatedRequest, res) => {
     const org = req.organization!;
@@ -1909,6 +1998,8 @@ export function createApp() {
       const invoice = orgInvoices.find((i) => i.id === pay.invoice_id);
       return {
         ...pay,
+        provider: 'simulated_demo' as const,
+        is_verified: false,
         customer_name: customer?.name || 'Unknown Customer',
         customer_email: customer?.email || '',
         invoice_number: invoice?.invoice_number || 'Unallocated',
@@ -1917,242 +2008,13 @@ export function createApp() {
 
     res.json({
       payments: enriched,
-      razorpayConfigured: isRazorpayConfigured(),
-      razorpayKeyId: process.env.RAZORPAY_KEY_ID || process.env.VITE_RAZORPAY_KEY_ID || null,
+      paymentsMode: 'demo_only',
     });
   });
 
-  app.post(
-    '/api/payments/razorpay/create-order',
-    requireOrgAccess,
-    async (req: AuthenticatedRequest, res) => {
-      const org = req.organization!;
-      const { invoice_id } = req.body || {};
-      const state = db.getState();
-
-      const invoice = state.invoices.find(
-        (i) => i.id === invoice_id && i.organization_id === org.id
-      );
-      if (!invoice) {
-        res.status(404).json({ error: 'Invoice not found.' });
-        return;
-      }
-
-      if (invoice.status === 'paid') {
-        res.status(400).json({ error: 'Invoice is already paid.' });
-        return;
-      }
-
-      const customer = state.customers.find((c) => c.id === invoice.customer_id);
-      const amountInPaise = Math.round(invoice.total_amount * 100);
-
-      if (isRazorpayConfigured()) {
-        try {
-          const rzp = new Razorpay({
-            key_id: (process.env.RAZORPAY_KEY_ID || process.env.VITE_RAZORPAY_KEY_ID)!,
-            key_secret: process.env.RAZORPAY_KEY_SECRET!,
-          });
-
-          const order = await rzp.orders.create({
-            amount: amountInPaise,
-            currency: invoice.currency,
-            receipt: invoice.invoice_number,
-            notes: {
-              organization_id: org.id,
-              invoice_id: invoice.id,
-              customer_id: invoice.customer_id,
-            },
-          });
-
-          invoice.razorpay_order_id = order.id;
-          db.commit();
-
-          res.json({
-            mode: 'razorpay_live_test',
-            key_id: process.env.RAZORPAY_KEY_ID || process.env.VITE_RAZORPAY_KEY_ID,
-            order_id: order.id,
-            amount: order.amount,
-            currency: order.currency,
-            invoice_id: invoice.id,
-            invoice_number: invoice.invoice_number,
-            customer: {
-              name: customer?.name || '',
-              email: customer?.email || '',
-              contact: customer?.phone || '',
-            },
-          });
-          return;
-        } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : 'Razorpay order creation failed';
-          res.status(502).json({ error: `Razorpay API Error: ${message}` });
-          return;
-        }
-      }
-
-      // If Razorpay API keys are not configured, create a deterministic test order ID
-      // and explicitly tell the client that Razorpay keys are not configured.
-      const testOrderId = `order_test_${invoice.invoice_number.replace(/[^a-zA-Z0-9]/g, '')}_${Date.now()}`;
-      invoice.razorpay_order_id = testOrderId;
-      db.commit();
-
-      res.json({
-        mode: 'simulated_test_order',
-        razorpayConfigured: false,
-        order_id: testOrderId,
-        amount: amountInPaise,
-        currency: invoice.currency,
-        invoice_id: invoice.id,
-        invoice_number: invoice.invoice_number,
-        customer: {
-          name: customer?.name || '',
-          email: customer?.email || '',
-          contact: customer?.phone || '',
-        },
-        notice:
-          'RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET not set in .env. Created local test order for signature verification testing or explicit Demo Mode simulation.',
-      });
-    }
-  );
-
-  /**
-   * Cryptographic Server-Side Razorpay Signature Verification
-   * Never trusts payment success from frontend without verifying HMAC-SHA256 signature.
-   */
-  app.post(
-    '/api/payments/razorpay/verify',
-    requireOrgAccess,
-    (req: AuthenticatedRequest, res) => {
-      const org = req.organization!;
-      const {
-        invoice_id,
-        razorpay_order_id,
-        razorpay_payment_id,
-        razorpay_signature,
-        payment_method = 'Card',
-      } = req.body || {};
-
-      if (!invoice_id || !razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
-        res.status(400).json({
-          error:
-            'Missing required verification fields (invoice_id, razorpay_order_id, razorpay_payment_id, razorpay_signature).',
-        });
-        return;
-      }
-
-      const state = db.getState();
-      const invoice = state.invoices.find(
-        (i) => i.id === invoice_id && i.organization_id === org.id
-      );
-      if (!invoice) {
-        res.status(404).json({ error: 'Invoice not found in your organization.' });
-        return;
-      }
-
-      // Prevent duplicate payment processing
-      if (
-        invoice.status === 'paid' ||
-        state.payments.some((p) => p.razorpay_payment_id === razorpay_payment_id)
-      ) {
-        res.status(409).json({ error: 'Payment has already been verified and processed.' });
-        return;
-      }
-
-      const secret = process.env.RAZORPAY_KEY_SECRET || 'revive_test_mode_hmac_secret';
-      const expectedSignature = crypto
-        .createHmac('sha256', secret)
-        .update(`${razorpay_order_id}|${razorpay_payment_id}`)
-        .digest('hex');
-
-      if (expectedSignature !== razorpay_signature) {
-        res.status(400).json({
-          error: 'Signature verification failed: Invalid HMAC-SHA256 payment signature.',
-          verified: false,
-        });
-        return;
-      }
-
-      const nowIso = new Date().toISOString();
-      invoice.status = 'paid';
-      invoice.paid_at = nowIso;
-      invoice.updated_at = nowIso;
-
-      // If linked to a past_due subscription, restore subscription to active
-      if (invoice.subscription_id) {
-        const sub = state.subscriptions.find(
-          (s) => s.id === invoice.subscription_id && s.organization_id === org.id
-        );
-        if (sub && sub.status === 'past_due') {
-          sub.status = 'active';
-          sub.updated_at = nowIso;
-        }
-      }
-
-      const payCount = state.payments.filter((p) => p.organization_id === org.id).length;
-      const payment: Payment = {
-        id: crypto.randomUUID(),
-        organization_id: org.id,
-        customer_id: invoice.customer_id,
-        invoice_id: invoice.id,
-        subscription_id: invoice.subscription_id,
-        payment_number: `PAY-${7006 + payCount}`,
-        amount: invoice.total_amount,
-        refunded_amount: 0,
-        currency: invoice.currency,
-        status: 'captured',
-        payment_method,
-        provider: 'razorpay',
-        is_verified: true,
-        razorpay_order_id,
-        razorpay_payment_id,
-        razorpay_signature,
-        paid_at: nowIso,
-        created_at: nowIso,
-        updated_at: nowIso,
-      };
-
-      state.payments.unshift(payment);
-
-      const customer = state.customers.find((c) => c.id === invoice.customer_id);
-      db.createNotificationIfNotExists({
-        organization_id: org.id,
-        type: 'payment_confirmation',
-        severity: 'success',
-        title: `Verified Razorpay payment for ${customer?.name || 'Customer'}`,
-        message: `Payment ${payment.payment_number} (₹${payment.amount.toLocaleString('en-IN')}) verified via HMAC-SHA256 for ${invoice.invoice_number}.`,
-        entity_type: 'payment',
-        entity_id: payment.id,
-        dedup_key: `payment_confirmation:${payment.id}`,
-      });
-
-      db.logAudit({
-        organization_id: org.id,
-        actor_id: req.user!.id,
-        actor_email: req.user!.email,
-        action: 'payment.verified',
-        entity_type: 'payment',
-        entity_id: payment.payment_number,
-        metadata: {
-          invoice: invoice.invoice_number,
-          razorpay_payment_id,
-          amount: payment.amount,
-        },
-      });
-
-      db.syncOrganizationHealthAndNotifications(org.id);
-      db.commit();
-
-      res.json({
-        verified: true,
-        payment,
-        invoice,
-      });
-    }
-  );
-
   /**
    * Explicit Demo Mode Simulated Payment / Failure Endpoint
-   * Clearly marks provider as 'simulated_demo' and is_verified: false so simulated transactions
-   * are never misrepresented as real verified Razorpay transactions.
+   * Strictly DEMO MODE ONLY — clearly marks provider as 'simulated_demo' and is_verified: false.
    */
   app.post('/api/payments/simulate', requireOrgAccess, (req: AuthenticatedRequest, res) => {
     const org = req.organization!;
@@ -2218,9 +2080,10 @@ export function createApp() {
 
       res.json({
         simulated: true,
+        demoMode: true,
         payment: failedPayment,
         invoice,
-        message: 'Simulated failed payment recorded in Demo Mode.',
+        message: 'Simulated failed payment recorded in DEMO MODE.',
       });
       return;
     }
@@ -2264,7 +2127,7 @@ export function createApp() {
       type: 'payment_confirmation',
       severity: 'success',
       title: `Demo payment recorded for ${customer?.name || 'Customer'}`,
-      message: `Simulated payment ${simulatedPayment.payment_number} (₹${simulatedPayment.amount.toLocaleString('en-IN')}) settled ${invoice.invoice_number}.`,
+      message: `Simulated DEMO payment ${simulatedPayment.payment_number} (₹${simulatedPayment.amount.toLocaleString('en-IN')}) settled ${invoice.invoice_number}.`,
       entity_type: 'payment',
       entity_id: simulatedPayment.id,
       dedup_key: `payment_confirmation:${simulatedPayment.id}`,
@@ -2285,9 +2148,10 @@ export function createApp() {
 
     res.json({
       simulated: true,
+      demoMode: true,
       payment: simulatedPayment,
       invoice,
-      message: `Simulated Demo Payment recorded for ${invoice.invoice_number}.`,
+      message: `Simulated DEMO MODE payment recorded for ${invoice.invoice_number}.`,
     });
   });
 
@@ -2338,11 +2202,11 @@ export function createApp() {
       action: 'payment.refunded',
       entity_type: 'payment',
       entity_id: payment.payment_number,
-      metadata: { refunded_amount: requestedRefund, status: payment.status },
+      metadata: { refunded_amount: requestedRefund, status: payment.status, demo: true },
     });
     db.commit();
 
-    res.json({ payment });
+    res.json({ payment, demoMode: true });
   });
 
   app.post('/api/payments/reconcile', requireOrgAccess, (req: AuthenticatedRequest, res) => {
@@ -2374,102 +2238,9 @@ export function createApp() {
       message:
         reconciledCount > 0
           ? `Reconciled ${reconciledCount} invoice(s) and updated account health scores.`
-          : 'All captured payments and invoices are in sync.',
+          : 'All captured demo payments and invoices are in sync.',
     });
   });
-
-  /**
-   * Razorpay Webhook Endpoint with HMAC Signature Verification & Idempotency
-   */
-  app.post(
-    '/api/webhooks/razorpay',
-    (req: Request & { rawBody?: string }, res: Response) => {
-      const signature = req.headers['x-razorpay-signature'] as string;
-      const webhookSecret =
-        process.env.RAZORPAY_WEBHOOK_SECRET || 'revive_test_webhook_secret';
-      const rawBody = req.rawBody || JSON.stringify(req.body || {});
-
-      if (!signature) {
-        res.status(400).json({ error: 'Missing x-razorpay-signature header.' });
-        return;
-      }
-
-      const expectedSig = crypto
-        .createHmac('sha256', webhookSecret)
-        .update(rawBody)
-        .digest('hex');
-
-      if (signature !== expectedSig) {
-        res.status(400).json({ error: 'Invalid webhook signature.' });
-        return;
-      }
-
-      const eventId =
-        (req.headers['x-razorpay-event-id'] as string) ||
-        req.body?.event_id ||
-        `evt_${crypto.createHash('sha256').update(rawBody).digest('hex').slice(0, 16)}`;
-
-      const state = db.getState();
-
-      // Idempotency check
-      if (state.webhook_events.some((e) => e.event_id === eventId)) {
-        res.status(200).json({ status: 'duplicate_ignored', event_id: eventId });
-        return;
-      }
-
-      const eventType = String(req.body?.event || 'unknown');
-      const paymentEntity = req.body?.payload?.payment?.entity;
-      const notes = paymentEntity?.notes || {};
-      const orgId = notes.organization_id || '11111111-1111-4111-8111-111111111111';
-
-      state.webhook_events.push({
-        id: crypto.randomUUID(),
-        provider: 'razorpay',
-        event_id: eventId,
-        event_type: eventType,
-        organization_id: orgId,
-        payload: req.body || {},
-        processed_at: new Date().toISOString(),
-      });
-
-      if (eventType === 'payment.captured' && paymentEntity) {
-        const invoiceId = notes.invoice_id;
-        const invoice = state.invoices.find(
-          (i) => i.id === invoiceId || i.razorpay_order_id === paymentEntity.order_id
-        );
-        if (invoice && invoice.status !== 'paid') {
-          const nowIso = new Date().toISOString();
-          invoice.status = 'paid';
-          invoice.paid_at = nowIso;
-          invoice.updated_at = nowIso;
-
-          state.payments.unshift({
-            id: crypto.randomUUID(),
-            organization_id: invoice.organization_id,
-            customer_id: invoice.customer_id,
-            invoice_id: invoice.id,
-            subscription_id: invoice.subscription_id,
-            payment_number: `PAY-WH-${Date.now().toString().slice(-4)}`,
-            amount: invoice.total_amount,
-            refunded_amount: 0,
-            currency: invoice.currency,
-            status: 'captured',
-            payment_method: paymentEntity.method || 'Card',
-            provider: 'razorpay',
-            is_verified: true,
-            razorpay_order_id: paymentEntity.order_id,
-            razorpay_payment_id: paymentEntity.id,
-            paid_at: nowIso,
-            created_at: nowIso,
-            updated_at: nowIso,
-          });
-        }
-      }
-
-      db.commit();
-      res.status(200).json({ status: 'processed', event_id: eventId });
-    }
-  );
 
   // --------------------------------------------------------------------------
   // NOTIFICATIONS
@@ -2559,7 +2330,7 @@ export function createApp() {
   });
 
   // --------------------------------------------------------------------------
-  // REAL AI REVENUE COPILOT (OpenAI API + Backend Financial Context)
+  // REAL AI REVENUE COPILOT (Google Gemini API + Backend Financial Context)
   // --------------------------------------------------------------------------
   app.post(
     '/api/ai/copilot',
@@ -2654,41 +2425,30 @@ export function createApp() {
         unpaid_and_failed_invoices: unpaidInvoices,
       };
 
-      if (!isOpenAIConfigured()) {
-        if (!allowDeterministicFallback) {
-          res.status(503).json({
-            configured: false,
-            mode: 'unconfigured',
-            error:
-              'OpenAI API key is not configured. Set OPENAI_API_KEY in your .env file to enable live OpenAI LLM responses, or enable the Deterministic SQL/Analytics Engine toggle to query your real database metrics.',
-            contextSummary: businessContext.financial_metrics,
-          });
-          return;
-        }
-
-        // Explicit Deterministic Data Engine response (clearly labelled, uses 100% real DB numbers)
-        const q = String(message).toLowerCase();
-        let reply = '';
-
+      const buildDeterministicReply = (rawQuestion: string) => {
+        const q = rawQuestion.toLowerCase();
         if (q.includes('mrr') || q.includes('arr') || q.includes('current')) {
-          reply = `**Current Recurring Revenue (${org.name}):**\n- **Total MRR:** ₹${metrics.mrr.toLocaleString('en-IN')} (₹${metrics.active_mrr.toLocaleString('en-IN')} active + ₹${metrics.past_due_mrr.toLocaleString('en-IN')} past due)\n- **Annualized Run Rate (ARR):** ₹${metrics.arr.toLocaleString('en-IN')}\n- **Active Subscriptions:** ${metrics.active_subscriptions_count} across ${metrics.total_customers_count} customers (ARPU: ₹${metrics.arpu.toLocaleString('en-IN')}/mo).`;
-        } else if (q.includes('risk') || q.includes('churn') || q.includes('attention')) {
+          return `**Current Recurring Revenue (${org.name}):**\n- **Total MRR:** ₹${metrics.mrr.toLocaleString('en-IN')} (₹${metrics.active_mrr.toLocaleString('en-IN')} active + ₹${metrics.past_due_mrr.toLocaleString('en-IN')} past due)\n- **Annualized Run Rate (ARR):** ₹${metrics.arr.toLocaleString('en-IN')}\n- **Active Subscriptions:** ${metrics.active_subscriptions_count} across ${metrics.total_customers_count} customers (ARPU: ₹${metrics.arpu.toLocaleString('en-IN')}/mo).`;
+        }
+        if (q.includes('risk') || q.includes('churn') || q.includes('attention')) {
           const topRisk = atRiskCustomers
             .map(
               (c) =>
                 `- **${c.name}** (${c.code}): Risk score **${c.risk_score}/100** · ₹${c.mrr.toLocaleString('en-IN')}/mo MRR · *${c.reason}*`
             )
             .join('\n');
-          reply = `**Churn & Risk Analysis:**\n- **MRR at Risk:** ₹${metrics.mrr_at_risk.toLocaleString('en-IN')}/mo across ${atRiskCustomers.length} accounts.\n- **Current Churn Rate:** ${metrics.churn_rate}%\n\n**Priority Accounts Requiring Intervention:**\n${topRisk || '- No high-risk accounts detected.'}`;
-        } else if (q.includes('fail') || q.includes('overdue') || q.includes('recover') || q.includes('invoice')) {
+          return `**Churn & Risk Analysis:**\n- **MRR at Risk:** ₹${metrics.mrr_at_risk.toLocaleString('en-IN')}/mo across ${atRiskCustomers.length} accounts.\n- **Current Churn Rate:** ${metrics.churn_rate}%\n\n**Priority Accounts Requiring Intervention:**\n${topRisk || '- No high-risk accounts detected.'}`;
+        }
+        if (q.includes('fail') || q.includes('overdue') || q.includes('recover') || q.includes('invoice')) {
           const invList = unpaidInvoices
             .map(
               (i) =>
                 `- **${i.invoice_number}** (${i.customer}): ₹${i.total_amount.toLocaleString('en-IN')} · Status: **${i.status.replace('_', ' ')}** (Due ${i.due_date})`
             )
             .join('\n');
-          reply = `**Payment Recovery & Outstanding Invoices:**\n- **Total Outstanding:** ₹${metrics.outstanding_revenue.toLocaleString('en-IN')} (${metrics.unpaid_invoices_count} unpaid invoices)\n- **Failed Payments:** ₹${metrics.failed_payment_amount.toLocaleString('en-IN')}\n- **Overdue Invoices:** ₹${metrics.overdue_revenue.toLocaleString('en-IN')}\n\n**Actionable Invoices:**\n${invList || '- All invoices are settled.'}`;
-        } else if (q.includes('plan') || q.includes('most revenue')) {
+          return `**Payment Recovery & Outstanding Invoices:**\n- **Total Outstanding:** ₹${metrics.outstanding_revenue.toLocaleString('en-IN')} (${metrics.unpaid_invoices_count} unpaid invoices)\n- **Failed Payments:** ₹${metrics.failed_payment_amount.toLocaleString('en-IN')}\n- **Overdue Invoices:** ₹${metrics.overdue_revenue.toLocaleString('en-IN')}\n\n**Actionable Invoices:**\n${invList || '- All invoices are settled.'}`;
+        }
+        if (q.includes('plan') || q.includes('most revenue')) {
           const sortedPlans = [...metrics.plan_performance].sort((a, b) => b.mrr - a.mrr);
           const planLines = sortedPlans
             .map(
@@ -2696,67 +2456,74 @@ export function createApp() {
                 `- **${p.name}** (${p.code}): ₹${p.mrr.toLocaleString('en-IN')}/mo MRR (${p.share_percent}% share · ${p.active_subscriptions} active subs)`
             )
             .join('\n');
-          reply = `**Subscription Plan Performance (Ranked by MRR):**\n${planLines}`;
-        } else if (q.includes('10%') || q.includes('price') || q.includes('forecast') || q.includes('project')) {
-          reply = `**Pricing & Revenue Projection Analysis:**\n- **Current Baseline MRR:** ₹${metrics.mrr.toLocaleString('en-IN')}/mo\n- **+10% Price Increase Impact (Zero Churn):** +₹${priceIncrease10PctImpact.toLocaleString('en-IN')}/mo (New MRR: ₹${roundMoney(metrics.mrr * 1.1).toLocaleString('en-IN')}/mo, ARR: ₹${roundMoney(metrics.mrr * 1.1 * 12).toLocaleString('en-IN')})\n- **Recommendation:** Apply the 10% increase to new subscribers and annual renewals first while recovering ₹${metrics.outstanding_revenue.toLocaleString('en-IN')} in unpaid invoices.`;
-        } else {
-          reply = `**Executive Summary for ${org.name}:**\n- **MRR / ARR:** ₹${metrics.mrr.toLocaleString('en-IN')}/mo (₹${metrics.arr.toLocaleString('en-IN')}/yr)\n- **Collected Revenue:** ₹${metrics.collected_revenue.toLocaleString('en-IN')} (${metrics.collection_rate}% collection rate)\n- **Outstanding / At Risk:** ₹${metrics.outstanding_revenue.toLocaleString('en-IN')} unpaid across ${unpaidInvoices.length} invoices; ₹${metrics.mrr_at_risk.toLocaleString('en-IN')}/mo MRR at risk across ${atRiskCustomers.length} accounts.\n- **Top Plan:** ${[...metrics.plan_performance].sort((a, b) => b.mrr - a.mrr)[0]?.name || 'N/A'}`;
+          return `**Subscription Plan Performance (Ranked by MRR):**\n${planLines}`;
+        }
+        if (q.includes('10%') || q.includes('price') || q.includes('forecast') || q.includes('project')) {
+          return `**Pricing & Revenue Projection Analysis:**\n- **Current Baseline MRR:** ₹${metrics.mrr.toLocaleString('en-IN')}/mo\n- **+10% Price Increase Impact (Zero Churn):** +₹${priceIncrease10PctImpact.toLocaleString('en-IN')}/mo (New MRR: ₹${roundMoney(metrics.mrr * 1.1).toLocaleString('en-IN')}/mo, ARR: ₹${roundMoney(metrics.mrr * 1.1 * 12).toLocaleString('en-IN')})\n- **Recommendation:** Apply the 10% increase to new subscribers and annual renewals first while recovering ₹${metrics.outstanding_revenue.toLocaleString('en-IN')} in unpaid invoices.`;
+        }
+        return `**Executive Summary for ${org.name}:**\n- **MRR / ARR:** ₹${metrics.mrr.toLocaleString('en-IN')}/mo (₹${metrics.arr.toLocaleString('en-IN')}/yr)\n- **Collected Revenue:** ₹${metrics.collected_revenue.toLocaleString('en-IN')} (${metrics.collection_rate}% collection rate)\n- **Outstanding / At Risk:** ₹${metrics.outstanding_revenue.toLocaleString('en-IN')} unpaid across ${unpaidInvoices.length} invoices; ₹${metrics.mrr_at_risk.toLocaleString('en-IN')}/mo MRR at risk across ${atRiskCustomers.length} accounts.\n- **Top Plan:** ${[...metrics.plan_performance].sort((a, b) => b.mrr - a.mrr)[0]?.name || 'N/A'}`;
+      };
+
+      if (!isGeminiConfigured()) {
+        if (!allowDeterministicFallback) {
+          res.status(503).json({
+            configured: false,
+            mode: 'unconfigured',
+            error:
+              'Google Gemini API key is not configured. Set GEMINI_API_KEY in your .env file to enable live Gemini AI responses, or enable the Deterministic SQL/Analytics Engine toggle to query your real database metrics.',
+            contextSummary: businessContext.financial_metrics,
+          });
+          return;
         }
 
         res.json({
           configured: false,
           mode: 'deterministic_analytics_engine',
-          answer: reply,
+          answer: buildDeterministicReply(String(message)),
           context: businessContext.financial_metrics,
         });
         return;
       }
 
       try {
-        const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-        const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
-
-        const systemPrompt = `You are Revive AI Revenue Copilot, a senior SaaS CFO and subscription revenue analyst for "${org.name}".
+        const systemInstruction = `You are Revive AI Revenue Copilot, a senior SaaS CFO and subscription revenue analyst for "${org.name}".
 You must ONLY use the exact aggregated database figures provided below. Never invent customer names, invoice numbers, or financial metrics.
-Format monetary amounts in ${org.currency} (using ₹ for INR) and provide concise, actionable, executive-level recommendations.
+Format monetary amounts in ${org.currency} (using ₹ for INR) and provide concise, actionable, executive-level recommendations covering revenue insights, churn analysis, subscription analysis, forecasting, and dunning recovery.
 
 LIVE DATABASE METRICS & RECORDS FOR ${org.name}:
 ${JSON.stringify(businessContext, null, 2)}`;
 
-        const priorMessages = Array.isArray(history)
-          ? history.slice(-6).map((m: { role?: string; text?: string }) => ({
-              role: (m.role === 'assistant' ? 'assistant' : 'user') as 'assistant' | 'user',
-              content: String(m.text || ''),
-            }))
-          : [];
-
-        const completion = await openai.chat.completions.create({
-          model,
-          temperature: 0.2,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            ...priorMessages,
-            { role: 'user', content: String(message) },
-          ],
+        const geminiResult = await generateWithGemini({
+          systemInstruction,
+          history: Array.isArray(history) ? history : [],
+          userMessage: String(message),
         });
-
-        const answer =
-          completion.choices[0]?.message?.content ||
-          'Unable to generate response from OpenAI.';
 
         res.json({
           configured: true,
-          mode: 'openai_live',
-          model,
-          answer,
+          mode: 'gemini_live',
+          model: geminiResult.resolvedModel,
+          requestedModel: geminiResult.requestedModel,
+          answer: geminiResult.answer,
           context: businessContext.financial_metrics,
         });
       } catch (err: unknown) {
-        const errMsg = err instanceof Error ? err.message : 'OpenAI API request failed';
+        const errMsg = err instanceof Error ? err.message : 'Google Gemini API request failed';
+        if (allowDeterministicFallback) {
+          res.json({
+            configured: true,
+            mode: 'deterministic_analytics_engine',
+            warning: errMsg,
+            answer: `${buildDeterministicReply(String(message))}\n\n*(Note: Live Gemini API returned "${errMsg}" — showing grounded database metrics from the Deterministic SQL/Analytics Engine.)*`,
+            context: businessContext.financial_metrics,
+          });
+          return;
+        }
         res.status(502).json({
           configured: true,
-          mode: 'openai_error',
-          error: `OpenAI API Error: ${errMsg}`,
+          mode: 'gemini_error',
+          error: errMsg,
+          contextSummary: businessContext.financial_metrics,
         });
       }
     }

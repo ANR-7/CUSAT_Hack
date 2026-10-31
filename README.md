@@ -9,10 +9,10 @@ Revive is a full-stack subscription management, billing operations, and AI-assis
 - **Frontend**: React 18, TypeScript, Vite, Recharts, Lucide Icons, Custom Design Token System (Dark & Light Mode)
 - **Backend**: Node.js, Express, TypeScript (`tsx`), Zod Input Validation, Express Rate Limit, CORS
 - **Database & Security**:
-  - **Supabase PostgreSQL & Row Level Security (RLS)**: Complete SQL schema migration (`supabase/migrations/001_initial_schema.sql`) and seed script (`supabase/seed.sql`) with strict multi-tenant `organization_id` isolation.
-  - **Persistent Local Relational Store (`server/store.ts`)**: Automatic fallback when external Supabase credentials are not configured, persisting all mutations to `server/data/db.Runtime.json` with one-click Demo Mode reset.
-- **Payments**: Razorpay Orders & Checkout (Test Mode) with server-side `HMAC-SHA256` signature verification, idempotent webhook processing, refunds, reconciliation, and explicit Demo Mode payment simulation.
-- **AI Revenue Copilot**: Server-side OpenAI API integration (`gpt-4o-mini`) grounded in backend-calculated financial metrics, with transparent configuration disclosure and a toggleable Deterministic Analytics Engine when `OPENAI_API_KEY` is not set.
+  - **Supabase PostgreSQL, Auth & Cloud Persistence**: Complete SQL schema migration (`supabase/migrations/001_initial_schema.sql`) and seed script (`supabase/seed.sql`) with strict multi-tenant `organization_id` Row Level Security (RLS), live Supabase Auth user synchronization, and Supabase Storage cloud ledger persistence.
+  - **Persistent Local Relational Store (`server/store.ts`)**: Automatic local cache/fallback (`server/data/db.Runtime.json`) with one-click Demo Mode reset.
+- **Payments (DEMO MODE ONLY)**: Simulated payment engine supporting successful and failed demo payments, simulated invoice settlements, printable PDF tax invoices/receipts, refunds, and ledger reconciliation clearly labeled as **DEMO MODE**.
+- **AI Revenue Copilot (Google Gemini API)**: Server-side Google Gemini API integration (`GEMINI_API_KEY`, `GEMINI_MODEL`) grounded in backend-calculated financial metrics, with transparent configuration disclosure and a toggleable Deterministic Analytics Engine.
 
 ---
 
@@ -68,18 +68,18 @@ npm run build
 
 ## External Service Credentials (`.env`)
 
-| Service | Environment Variables | Behavior When Unconfigured |
+| Service | Environment Variables | Behavior |
 | :--- | :--- | :--- |
-| **Supabase** | `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` | Uses persistent local relational database (`server/data/db.Runtime.json`) with full multi-tenant isolation. |
-| **OpenAI API** | `OPENAI_API_KEY`, `OPENAI_MODEL` | Displays a clear configuration notice in the AI Copilot and allows toggling the Deterministic Backend Analytics Engine. |
-| **Razorpay** | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` | Enables HMAC-SHA256 verification with test secret and provides an explicit Demo Payment Simulator modal. |
-| **Resend Email** | `RESEND_API_KEY`, `EMAIL_FROM` | Logs dunning reminders in the workspace audit trail and notifies that external email delivery is unconfigured. |
+| **Supabase** | `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` | Connects to live Supabase project (`auth.users` & private cloud storage bucket `revive-ledger-store`) + local relational persistence with strict multi-tenant isolation. |
+| **Google Gemini API** | `GEMINI_API_KEY`, `GEMINI_MODEL` | Server-side Google Gemini AI Revenue Copilot grounded in live Revive business data, with Deterministic Analytics Engine fallback. |
+| **Payments** | *(None required — DEMO MODE ONLY)* | Strictly simulated payments (`DEMO MODE`) supporting successful settlements, failed bank declines, receipts, and refunds. |
+| **Resend Email** | `RESEND_API_KEY`, `EMAIL_FROM` | Logs dunning reminders in the workspace audit trail and notifies when external email delivery is unconfigured. |
 
 ---
 
 ## Key API Endpoints
 
-- `GET /api/health` — Server health & external integration status
+- `GET /api/health` — Server health & external integration status (`supabase`, `gemini`, `paymentsMode: 'demo_only'`)
 - `POST /api/auth/signup`, `POST /api/auth/login`, `POST /api/auth/demo-login`, `POST /api/auth/reset-password`, `GET /api/auth/me`, `PUT /api/auth/profile`
 - `POST /api/organizations`, `PUT /api/organizations/:id`, `POST /api/demo/reset`
 - `GET /api/analytics/overview?range=7d|30d|90d|12m|custom`
@@ -87,8 +87,7 @@ npm run build
 - `GET /api/plans`, `POST /api/plans`, `PUT /api/plans/:id`, `DELETE /api/plans/:id`
 - `GET /api/subscriptions`, `POST /api/subscriptions`, `PUT /api/subscriptions/:id`, `POST /api/subscriptions/:id/lifecycle` (`pause`, `resume`, `cancel`, `renew`, `change_plan`)
 - `GET /api/invoices`, `GET /api/invoices/:id`, `POST /api/invoices`, `POST /api/invoices/:id/send-reminder`
-- `GET /api/payments`, `POST /api/payments/razorpay/create-order`, `POST /api/payments/razorpay/verify`, `POST /api/payments/simulate`, `POST /api/payments/:id/refund`, `POST /api/payments/reconcile`
-- `POST /api/webhooks/razorpay`
+- `GET /api/payments`, `POST /api/payments/simulate`, `POST /api/payments/:id/refund`, `POST /api/payments/reconcile`
 - `POST /api/ai/copilot`
 - `POST /api/simulator/calculate`
 

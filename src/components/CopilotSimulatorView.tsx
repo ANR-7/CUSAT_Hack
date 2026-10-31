@@ -32,7 +32,8 @@ import { formatCompactMoney, formatMoney } from '../utils/format';
 
 interface CopilotViewProps {
   organization: Organization;
-  openaiConfigured: boolean;
+  geminiConfigured: boolean;
+  geminiModel?: string;
   overviewData: any;
   customers: any[];
   onNavigate: (page: string) => void;
@@ -41,7 +42,8 @@ interface CopilotViewProps {
 
 export function RevenueCopilotView({
   organization,
-  openaiConfigured,
+  geminiConfigured,
+  geminiModel = 'gemini-3.8-flash',
   overviewData,
   customers,
   onNavigate,
@@ -54,7 +56,7 @@ export function RevenueCopilotView({
   const [allowFallback, setAllowFallback] = useState(true);
   const [configError, setConfigError] = useState('');
   const [chat, setChat] = useState<
-    Array<{ role: 'user' | 'assistant'; text: string; mode?: string }>
+    Array<{ role: 'user' | 'assistant'; text: string; mode?: string; model?: string }>
   >([]);
 
   const suggestedQuestions = [
@@ -90,6 +92,7 @@ export function RevenueCopilotView({
           role: 'assistant',
           text: res.answer,
           mode: res.mode,
+          model: res.model,
         },
       ]);
     } catch (err: any) {
@@ -111,24 +114,24 @@ export function RevenueCopilotView({
     <div>
       <div className="page-heading">
         <div>
-          <div className="eyebrow">AI REVENUE COPILOT & RISK TELEMETRY</div>
+          <div className="eyebrow">GOOGLE GEMINI AI REVENUE COPILOT & RISK TELEMETRY</div>
           <h1>Revenue Intelligence</h1>
           <p>
             Query your live organization metrics, identify churn risks, and generate data-backed
-            action plans.
+            action plans powered by Google Gemini.
           </p>
         </div>
         <div className="heading-actions">
-          <span className={`status-pill ${openaiConfigured ? 'active' : 'overdue'}`}>
+          <span className={`status-pill ${geminiConfigured ? 'active' : 'overdue'}`}>
             <i />
-            {openaiConfigured
-              ? 'OpenAI API Connected (Server-Side)'
-              : 'OPENAI_API_KEY Not Configured'}
+            {geminiConfigured
+              ? `Google Gemini Connected (${geminiModel})`
+              : 'GEMINI_API_KEY Not Configured'}
           </span>
         </div>
       </div>
 
-      {!openaiConfigured && (
+      {!geminiConfigured && (
         <div
           className="panel"
           style={{
@@ -145,11 +148,12 @@ export function RevenueCopilotView({
         >
           <div style={{ fontSize: 12 }}>
             <strong style={{ color: 'var(--status-warning)' }}>
-              OpenAI API Key Configuration Notice:
+              Google Gemini API Key Configuration Notice:
             </strong>{' '}
             <span>
-              Set <code className="mono">OPENAI_API_KEY=sk-...</code> in your{' '}
-              <code className="mono">.env</code> file to enable live OpenAI LLM completions. When
+              Set <code className="mono">GEMINI_API_KEY</code> and{' '}
+              <code className="mono">GEMINI_MODEL</code> in your{' '}
+              <code className="mono">.env</code> file to enable live Google Gemini completions. When
               unconfigured, you can toggle the{' '}
               <strong>Deterministic Backend Analytics Engine</strong> below to answer questions
               using exact server-side SQL/ledger aggregations.
@@ -179,7 +183,7 @@ export function RevenueCopilotView({
         <section className="panel chat-container">
           <div className="panel-header">
             <div>
-              <h2>Ask Revive Revenue Copilot</h2>
+              <h2>Ask Revive Revenue Copilot (Google Gemini)</h2>
               <p>
                 Grounded in {organization.name}'s live ledger (MRR:{' '}
                 {formatMoney(metrics.mrr, currency)} · Outstanding:{' '}
@@ -214,7 +218,7 @@ export function RevenueCopilotView({
                       }}
                     >
                       <strong style={{ fontSize: 11.5 }}>
-                        {msg.role === 'assistant' ? 'Revive Copilot' : 'You'}
+                        {msg.role === 'assistant' ? 'Revive Gemini Copilot' : 'You'}
                       </strong>
                       {msg.mode && (
                         <span
@@ -224,8 +228,8 @@ export function RevenueCopilotView({
                             fontFamily: 'var(--font-mono)',
                           }}
                         >
-                          {msg.mode === 'openai_live'
-                            ? 'Verified OpenAI API'
+                          {msg.mode === 'gemini_live'
+                            ? `Google Gemini API (${msg.model || geminiModel})`
                             : 'Deterministic Analytics Engine'}
                         </span>
                       )}

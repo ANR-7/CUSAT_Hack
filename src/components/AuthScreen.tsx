@@ -133,9 +133,9 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
           <div className="eyebrow">ENTERPRISE REVENUE OPERATIONS</div>
           <h1>Control recurring revenue, prevent churn, and automate billing.</h1>
           <p>
-            Revive unifies subscription lifecycle management, GST-compliant invoicing, verified
-            Razorpay collections, deterministic scenario modeling, and an AI Revenue Copilot
-            grounded in your live ledger.
+            Revive unifies subscription lifecycle management, GST-compliant invoicing, simulated
+            demo payment collections, deterministic scenario modeling, and a Google Gemini AI
+            Revenue Copilot grounded in your live ledger.
           </p>
 
           <div className="auth-feature-list">
@@ -147,20 +147,21 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
               </span>
             </div>
             <div className="auth-feature-item">
-              <strong>Verified Razorpay Checkout</strong>
+              <strong>Demo Payment Simulator (DEMO MODE)</strong>
               <span>
-                Server-side HMAC-SHA256 payment signature verification and idempotent webhooks.
+                Simulate successful and failed payments, invoice settlements, receipts, and refunds
+                safely in Demo Mode.
               </span>
             </div>
             <div className="auth-feature-item">
-              <strong>AI Revenue Copilot</strong>
+              <strong>Google Gemini AI Revenue Copilot</strong>
               <span>
-                Context-aware insights powered by OpenAI and exact server-side financial
+                Context-aware insights powered by Google Gemini and exact server-side financial
                 aggregations.
               </span>
             </div>
             <div className="auth-feature-item">
-              <strong>Multi-Tenant Security</strong>
+              <strong>Multi-Tenant Security & Supabase</strong>
               <span>
                 Organization-level data isolation enforced via Row Level Security and strict API
                 guards.
@@ -172,9 +173,9 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
         <div style={{ fontSize: 11, color: 'var(--text-muted)', display: 'flex', gap: 16 }}>
           <span>SOC2 & RLS Tenant Isolated</span>
           <span>·</span>
-          <span>Razorpay Test Mode Ready</span>
+          <span>Google Gemini AI Copilot</span>
           <span>·</span>
-          <span>Supabase PostgreSQL Schema</span>
+          <span>Supabase Cloud Connected</span>
         </div>
       </div>
 

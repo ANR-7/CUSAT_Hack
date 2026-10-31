@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import dotenv from 'dotenv';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import {
   AuditLog,
@@ -17,10 +18,18 @@ import {
   Subscription,
   UsageRecord,
 } from './types.js';
-import { calculateInvoiceTotals, calculateSubscriptionMrr, evaluateCustomerHealth } from './finance.js';
+import {
+  calculateInvoiceTotals,
+  calculateSubscriptionMrr,
+  evaluateCustomerHealth,
+} from './finance.js';
+
+dotenv.config();
 
 const DATA_DIR = path.resolve(process.cwd(), 'server', 'data');
 const DB_FILE = path.join(DATA_DIR, 'db.Runtime.json');
+const SUPABASE_BUCKET = 'revive-ledger-store';
+const SUPABASE_STATE_OBJECT = 'ledger-state.json';
 
 export function hashPassword(password: string): string {
   const salt = 'revive_salt_v2_2026';
@@ -68,7 +77,9 @@ export function verifyToken(token: string): AuthTokenPayload | null {
       .update(base64Payload)
       .digest('base64url');
     if (signature !== expectedSig) return null;
-    const payload = JSON.parse(Buffer.from(base64Payload, 'base64url').toString('utf8')) as AuthTokenPayload;
+    const payload = JSON.parse(
+      Buffer.from(base64Payload, 'base64url').toString('utf8')
+    ) as AuthTokenPayload;
     if (Date.now() > payload.exp) return null;
     return payload;
   } catch {
@@ -86,11 +97,34 @@ export function isSupabaseConfigured(): boolean {
   );
 }
 
-export function getSupabaseClient(): SupabaseClient | null {
+let cachedAdminClient: SupabaseClient | null = null;
+let cachedAnonClient: SupabaseClient | null = null;
+
+export function getSupabaseAdminClient(): SupabaseClient | null {
   if (!isSupabaseConfigured()) return null;
+  if (cachedAdminClient) return cachedAdminClient;
   const url = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL)!;
   const key = (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY)!;
-  return createClient(url, key, { auth: { persistSession: false } });
+  cachedAdminClient = createClient(url, key, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  return cachedAdminClient;
+}
+
+export function getSupabaseAnonClient(): SupabaseClient | null {
+  if (!isSupabaseConfigured()) return null;
+  if (cachedAnonClient) return cachedAnonClient;
+  const url = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL)!;
+  const key = (
+    process.env.SUPABASE_ANON_KEY ||
+    process.env.VITE_SUPABASE_ANON_KEY ||
+    process.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
+    process.env.SUPABASE_SERVICE_ROLE_KEY
+  )!;
+  cachedAnonClient = createClient(url, key, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  return cachedAnonClient;
 }
 
 export function buildSeedDatabase(): DatabaseState {
@@ -218,7 +252,6 @@ export function buildSeedDatabase(): DatabaseState {
         'CSV data exports',
       ],
       status: 'active',
-      razorpay_plan_id: 'plan_test_starter_01',
       created_at: '2026-01-15T10:00:00.000Z',
       updated_at: '2026-09-01T10:00:00.000Z',
     },
@@ -235,11 +268,10 @@ export function buildSeedDatabase(): DatabaseState {
       features: [
         'Up to 2,000 active subscribers',
         'Cohort retention & churn intelligence',
-        'Automated Razorpay webhook reconciliation',
+        'Automated invoice reconciliation',
         'Priority engineering support',
       ],
       status: 'active',
-      razorpay_plan_id: 'plan_test_pro_02',
       created_at: '2026-01-15T10:00:00.000Z',
       updated_at: '2026-09-01T10:00:00.000Z',
     },
@@ -255,12 +287,11 @@ export function buildSeedDatabase(): DatabaseState {
       trial_days: 14,
       features: [
         'Unlimited subscribers & custom plans',
-        'OpenAI Revenue Copilot & risk scoring',
+        'Gemini AI Revenue Copilot & risk scoring',
         'Deterministic 12-month scenario simulator',
         'Dedicated account manager',
       ],
       status: 'active',
-      razorpay_plan_id: 'plan_test_growth_03',
       created_at: '2026-01-15T10:00:00.000Z',
       updated_at: '2026-09-01T10:00:00.000Z',
     },
@@ -277,11 +308,10 @@ export function buildSeedDatabase(): DatabaseState {
       features: [
         'Annual billing (₹24,000/mo equivalent)',
         'Full audit trail & RBAC security',
-        'Custom ERP & webhook integrations',
+        'Custom ERP & reporting integrations',
         '99.99% uptime SLA guarantee',
       ],
       status: 'active',
-      razorpay_plan_id: 'plan_test_scale_04',
       created_at: '2026-01-15T10:00:00.000Z',
       updated_at: '2026-09-01T10:00:00.000Z',
     },
@@ -297,15 +327,13 @@ export function buildSeedDatabase(): DatabaseState {
       trial_days: 14,
       features: [
         'Quarterly billing (₹14,200/mo equivalent)',
-        'AI Revenue Copilot included',
+        'Gemini AI Revenue Copilot included',
         'Automated quarterly business reviews',
       ],
       status: 'active',
-      razorpay_plan_id: 'plan_test_quarterly_05',
       created_at: '2026-03-01T10:00:00.000Z',
       updated_at: '2026-09-01T10:00:00.000Z',
     },
-    // Second tenant plan for isolation testing
     {
       id: 'plan-apex-01',
       organization_id: org2Id,
@@ -495,7 +523,6 @@ export function buildSeedDatabase(): DatabaseState {
       created_at: '2026-10-22T09:30:00.000Z',
       updated_at: '2026-10-30T10:00:00.000Z',
     },
-    // Second organization customer (for tenant isolation test)
     {
       id: 'cus-apex-9001',
       organization_id: org2Id,
@@ -530,7 +557,7 @@ export function buildSeedDatabase(): DatabaseState {
       discount_percent: 0,
       currency: 'INR',
       billing_interval: 'yearly',
-      mrr_amount: calculateSubscriptionMrr(288000, 1, 'yearly', 0), // 24,000
+      mrr_amount: calculateSubscriptionMrr(288000, 1, 'yearly', 0),
       start_date: '2025-10-29T00:00:00.000Z',
       current_period_start: '2026-10-29T00:00:00.000Z',
       current_period_end: '2027-10-29T00:00:00.000Z',
@@ -540,7 +567,6 @@ export function buildSeedDatabase(): DatabaseState {
       cancelled_at: null,
       cancel_at_period_end: false,
       cancellation_reason: null,
-      razorpay_subscription_id: 'sub_test_northstar_401',
       created_at: '2025-10-29T00:00:00.000Z',
       updated_at: '2026-10-29T14:20:00.000Z',
     },
@@ -556,7 +582,7 @@ export function buildSeedDatabase(): DatabaseState {
       discount_percent: 0,
       currency: 'INR',
       billing_interval: 'monthly',
-      mrr_amount: calculateSubscriptionMrr(15800, 1, 'monthly', 0), // 15,800
+      mrr_amount: calculateSubscriptionMrr(15800, 1, 'monthly', 0),
       start_date: '2026-04-28T00:00:00.000Z',
       current_period_start: '2026-10-28T00:00:00.000Z',
       current_period_end: '2026-11-28T00:00:00.000Z',
@@ -566,7 +592,6 @@ export function buildSeedDatabase(): DatabaseState {
       cancelled_at: null,
       cancel_at_period_end: false,
       cancellation_reason: null,
-      razorpay_subscription_id: 'sub_test_morrow_402',
       created_at: '2026-04-28T00:00:00.000Z',
       updated_at: '2026-10-28T09:15:00.000Z',
     },
@@ -582,7 +607,7 @@ export function buildSeedDatabase(): DatabaseState {
       discount_percent: 0,
       currency: 'INR',
       billing_interval: 'monthly',
-      mrr_amount: calculateSubscriptionMrr(8400, 1, 'monthly', 0), // 8,400
+      mrr_amount: calculateSubscriptionMrr(8400, 1, 'monthly', 0),
       start_date: '2026-04-29T00:00:00.000Z',
       current_period_start: '2026-09-29T00:00:00.000Z',
       current_period_end: '2026-10-29T00:00:00.000Z',
@@ -592,7 +617,6 @@ export function buildSeedDatabase(): DatabaseState {
       cancelled_at: null,
       cancel_at_period_end: false,
       cancellation_reason: null,
-      razorpay_subscription_id: 'sub_test_pixelforge_403',
       created_at: '2026-04-29T00:00:00.000Z',
       updated_at: '2026-10-26T16:00:00.000Z',
     },
@@ -608,7 +632,7 @@ export function buildSeedDatabase(): DatabaseState {
       discount_percent: 10,
       currency: 'INR',
       billing_interval: 'yearly',
-      mrr_amount: calculateSubscriptionMrr(288000, 2, 'yearly', 10), // 43,200
+      mrr_amount: calculateSubscriptionMrr(288000, 2, 'yearly', 10),
       start_date: '2026-02-25T00:00:00.000Z',
       current_period_start: '2026-02-25T00:00:00.000Z',
       current_period_end: '2027-02-25T00:00:00.000Z',
@@ -618,7 +642,6 @@ export function buildSeedDatabase(): DatabaseState {
       cancelled_at: null,
       cancel_at_period_end: false,
       cancellation_reason: null,
-      razorpay_subscription_id: 'sub_test_cedar_404',
       created_at: '2026-02-25T00:00:00.000Z',
       updated_at: '2026-10-25T11:00:00.000Z',
     },
@@ -634,7 +657,7 @@ export function buildSeedDatabase(): DatabaseState {
       discount_percent: 0,
       currency: 'INR',
       billing_interval: 'monthly',
-      mrr_amount: calculateSubscriptionMrr(3900, 1, 'monthly', 0), // 3,900
+      mrr_amount: calculateSubscriptionMrr(3900, 1, 'monthly', 0),
       start_date: '2026-05-02T00:00:00.000Z',
       current_period_start: '2026-10-02T00:00:00.000Z',
       current_period_end: '2026-11-02T00:00:00.000Z',
@@ -644,7 +667,6 @@ export function buildSeedDatabase(): DatabaseState {
       cancelled_at: null,
       cancel_at_period_end: false,
       cancellation_reason: null,
-      razorpay_subscription_id: 'sub_test_bluebird_405',
       created_at: '2026-05-02T00:00:00.000Z',
       updated_at: '2026-10-02T10:00:00.000Z',
     },
@@ -660,7 +682,7 @@ export function buildSeedDatabase(): DatabaseState {
       discount_percent: 0,
       currency: 'INR',
       billing_interval: 'monthly',
-      mrr_amount: calculateSubscriptionMrr(15800, 1, 'monthly', 0), // 15,800
+      mrr_amount: calculateSubscriptionMrr(15800, 1, 'monthly', 0),
       start_date: '2026-06-01T00:00:00.000Z',
       current_period_start: '2026-10-01T00:00:00.000Z',
       current_period_end: '2026-11-01T00:00:00.000Z',
@@ -670,7 +692,6 @@ export function buildSeedDatabase(): DatabaseState {
       cancelled_at: null,
       cancel_at_period_end: false,
       cancellation_reason: null,
-      razorpay_subscription_id: 'sub_test_orbit_406',
       created_at: '2026-06-01T00:00:00.000Z',
       updated_at: '2026-10-08T10:00:00.000Z',
     },
@@ -686,7 +707,7 @@ export function buildSeedDatabase(): DatabaseState {
       discount_percent: 0,
       currency: 'INR',
       billing_interval: 'monthly',
-      mrr_amount: calculateSubscriptionMrr(8400, 2, 'monthly', 0), // 16,800
+      mrr_amount: calculateSubscriptionMrr(8400, 2, 'monthly', 0),
       start_date: '2026-06-27T00:00:00.000Z',
       current_period_start: '2026-10-27T00:00:00.000Z',
       current_period_end: '2026-11-27T00:00:00.000Z',
@@ -696,7 +717,6 @@ export function buildSeedDatabase(): DatabaseState {
       cancelled_at: null,
       cancel_at_period_end: false,
       cancellation_reason: null,
-      razorpay_subscription_id: 'sub_test_kindred_407',
       created_at: '2026-06-27T00:00:00.000Z',
       updated_at: '2026-10-27T12:00:00.000Z',
     },
@@ -712,7 +732,7 @@ export function buildSeedDatabase(): DatabaseState {
       discount_percent: 0,
       currency: 'INR',
       billing_interval: 'quarterly',
-      mrr_amount: calculateSubscriptionMrr(42600, 1, 'quarterly', 0), // 14,200
+      mrr_amount: calculateSubscriptionMrr(42600, 1, 'quarterly', 0),
       start_date: '2026-07-15T00:00:00.000Z',
       current_period_start: '2026-10-15T00:00:00.000Z',
       current_period_end: '2027-01-15T00:00:00.000Z',
@@ -722,7 +742,6 @@ export function buildSeedDatabase(): DatabaseState {
       cancelled_at: null,
       cancel_at_period_end: false,
       cancellation_reason: null,
-      razorpay_subscription_id: 'sub_test_verve_408',
       created_at: '2026-07-15T00:00:00.000Z',
       updated_at: '2026-10-15T10:00:00.000Z',
     },
@@ -738,7 +757,7 @@ export function buildSeedDatabase(): DatabaseState {
       discount_percent: 0,
       currency: 'INR',
       billing_interval: 'monthly',
-      mrr_amount: calculateSubscriptionMrr(15800, 2, 'monthly', 0), // 31,600
+      mrr_amount: calculateSubscriptionMrr(15800, 2, 'monthly', 0),
       start_date: '2026-10-22T00:00:00.000Z',
       current_period_start: '2026-10-22T00:00:00.000Z',
       current_period_end: '2026-11-05T00:00:00.000Z',
@@ -751,7 +770,6 @@ export function buildSeedDatabase(): DatabaseState {
       created_at: '2026-10-22T00:00:00.000Z',
       updated_at: '2026-10-22T00:00:00.000Z',
     },
-    // Second tenant subscription
     {
       id: 'sub-apex-901',
       organization_id: org2Id,
@@ -881,7 +899,7 @@ export function buildSeedDatabase(): DatabaseState {
       '2026-10-28T09:00:00.000Z',
       '2026-11-04T09:00:00.000Z',
       '2026-10-28T09:05:00.000Z',
-      'Paid via UPI AutoPay mandate.'
+      'Settled in Demo Mode via UPI.'
     ),
     makeInv(
       'inv-2075',
@@ -896,7 +914,7 @@ export function buildSeedDatabase(): DatabaseState {
       '2026-10-27T09:00:00.000Z',
       '2026-11-03T09:00:00.000Z',
       '2026-10-27T09:12:00.000Z',
-      'Paid via UPI.'
+      'Settled in Demo Mode via UPI.'
     ),
     makeInv(
       'inv-2074',
@@ -911,7 +929,7 @@ export function buildSeedDatabase(): DatabaseState {
       '2026-10-25T09:00:00.000Z',
       '2026-11-01T09:00:00.000Z',
       '2026-10-25T14:10:00.000Z',
-      'Settled via NEFT/RTGS bank transfer.'
+      'Settled in Demo Mode via NEFT/RTGS bank transfer.'
     ),
     makeInv(
       'inv-2073',
@@ -943,7 +961,6 @@ export function buildSeedDatabase(): DatabaseState {
       null,
       'Upcoming renewal due on Nov 2, 2026.'
     ),
-    // Historical paid invoices across May - September 2026 for real historical charts
     makeInv(
       'inv-2060',
       'INV-2060',
@@ -1034,10 +1051,8 @@ export function buildSeedDatabase(): DatabaseState {
       currency: 'INR',
       status: 'captured',
       payment_method: 'UPI',
-      provider: 'razorpay',
-      is_verified: true,
-      razorpay_order_id: 'order_test_morrow_2076',
-      razorpay_payment_id: 'pay_test_morrow_2076',
+      provider: 'simulated_demo',
+      is_verified: false,
       paid_at: '2026-10-28T09:05:00.000Z',
       created_at: '2026-10-28T09:05:00.000Z',
       updated_at: '2026-10-28T09:05:00.000Z',
@@ -1054,10 +1069,8 @@ export function buildSeedDatabase(): DatabaseState {
       currency: 'INR',
       status: 'captured',
       payment_method: 'UPI',
-      provider: 'razorpay',
-      is_verified: true,
-      razorpay_order_id: 'order_test_kindred_2075',
-      razorpay_payment_id: 'pay_test_kindred_2075',
+      provider: 'simulated_demo',
+      is_verified: false,
       paid_at: '2026-10-27T09:12:00.000Z',
       created_at: '2026-10-27T09:12:00.000Z',
       updated_at: '2026-10-27T09:12:00.000Z',
@@ -1074,10 +1087,8 @@ export function buildSeedDatabase(): DatabaseState {
       currency: 'INR',
       status: 'captured',
       payment_method: 'Bank transfer',
-      provider: 'razorpay',
-      is_verified: true,
-      razorpay_order_id: 'order_test_cedar_2074',
-      razorpay_payment_id: 'pay_test_cedar_2074',
+      provider: 'simulated_demo',
+      is_verified: false,
       paid_at: '2026-10-25T14:10:00.000Z',
       created_at: '2026-10-25T14:10:00.000Z',
       updated_at: '2026-10-25T14:10:00.000Z',
@@ -1094,10 +1105,8 @@ export function buildSeedDatabase(): DatabaseState {
       currency: 'INR',
       status: 'captured',
       payment_method: 'Bank transfer',
-      provider: 'razorpay',
-      is_verified: true,
-      razorpay_order_id: 'order_test_verve_2073',
-      razorpay_payment_id: 'pay_test_verve_2073',
+      provider: 'simulated_demo',
+      is_verified: false,
       paid_at: '2026-10-15T11:30:00.000Z',
       created_at: '2026-10-15T11:30:00.000Z',
       updated_at: '2026-10-15T11:30:00.000Z',
@@ -1114,15 +1123,13 @@ export function buildSeedDatabase(): DatabaseState {
       currency: 'INR',
       status: 'failed',
       payment_method: 'Card',
-      provider: 'razorpay',
+      provider: 'simulated_demo',
       is_verified: false,
-      razorpay_order_id: 'order_test_northstar_2084',
-      failure_reason: 'BAD_REQUEST_ERROR: Card transaction limit exceeded on corporate Visa ending 4242',
+      failure_reason: 'DEMO_DECLINE: Card transaction limit exceeded on corporate Visa ending 4242',
       paid_at: null,
       created_at: '2026-10-29T09:15:00.000Z',
       updated_at: '2026-10-29T09:15:00.000Z',
     },
-    // Historical captured payments
     {
       id: 'pay-6990',
       organization_id: org1Id,
@@ -1135,8 +1142,8 @@ export function buildSeedDatabase(): DatabaseState {
       currency: 'INR',
       status: 'captured',
       payment_method: 'Bank transfer',
-      provider: 'razorpay',
-      is_verified: true,
+      provider: 'simulated_demo',
+      is_verified: false,
       paid_at: '2026-09-15T12:00:00.000Z',
       created_at: '2026-09-15T12:00:00.000Z',
       updated_at: '2026-09-15T12:00:00.000Z',
@@ -1153,8 +1160,8 @@ export function buildSeedDatabase(): DatabaseState {
       currency: 'INR',
       status: 'captured',
       payment_method: 'Bank transfer',
-      provider: 'razorpay',
-      is_verified: true,
+      provider: 'simulated_demo',
+      is_verified: false,
       paid_at: '2026-08-15T12:00:00.000Z',
       created_at: '2026-08-15T12:00:00.000Z',
       updated_at: '2026-08-15T12:00:00.000Z',
@@ -1171,8 +1178,8 @@ export function buildSeedDatabase(): DatabaseState {
       currency: 'INR',
       status: 'captured',
       payment_method: 'UPI',
-      provider: 'razorpay',
-      is_verified: true,
+      provider: 'simulated_demo',
+      is_verified: false,
       paid_at: '2026-07-15T12:00:00.000Z',
       created_at: '2026-07-15T12:00:00.000Z',
       updated_at: '2026-07-15T12:00:00.000Z',
@@ -1189,8 +1196,8 @@ export function buildSeedDatabase(): DatabaseState {
       currency: 'INR',
       status: 'captured',
       payment_method: 'UPI',
-      provider: 'razorpay',
-      is_verified: true,
+      provider: 'simulated_demo',
+      is_verified: false,
       paid_at: '2026-06-15T12:00:00.000Z',
       created_at: '2026-06-15T12:00:00.000Z',
       updated_at: '2026-06-15T12:00:00.000Z',
@@ -1207,8 +1214,8 @@ export function buildSeedDatabase(): DatabaseState {
       currency: 'INR',
       status: 'captured',
       payment_method: 'Bank transfer',
-      provider: 'razorpay',
-      is_verified: true,
+      provider: 'simulated_demo',
+      is_verified: false,
       paid_at: '2026-05-15T12:00:00.000Z',
       created_at: '2026-05-15T12:00:00.000Z',
       updated_at: '2026-05-15T12:00:00.000Z',
@@ -1221,8 +1228,8 @@ export function buildSeedDatabase(): DatabaseState {
       organization_id: org1Id,
       customer_id: 'cus-northstar-1042',
       type: 'card',
-      provider: 'razorpay',
-      provider_token_id: 'token_rzp_northstar_4242',
+      provider: 'simulated_demo',
+      provider_token_id: 'token_demo_northstar_4242',
       brand: 'Visa Corporate',
       last4: '4242',
       expiry_month: 8,
@@ -1236,8 +1243,8 @@ export function buildSeedDatabase(): DatabaseState {
       organization_id: org1Id,
       customer_id: 'cus-morrow-1041',
       type: 'upi',
-      provider: 'razorpay',
-      provider_token_id: 'token_rzp_morrow_upi',
+      provider: 'simulated_demo',
+      provider_token_id: 'token_demo_morrow_upi',
       upi_vpa_masked: 'morrow.ops@okhdfcbank',
       is_default: true,
       created_at: '2026-04-02T11:30:00.000Z',
@@ -1259,8 +1266,8 @@ export function buildSeedDatabase(): DatabaseState {
     {
       id: 'use-2',
       organization_id: org1Id,
-      subscription_id: 'sub-402',
       customer_id: 'cus-morrow-1041',
+      subscription_id: 'sub-402',
       metric_name: 'Active Seat Licenses',
       quantity: 18,
       recorded_at: '2026-10-30T10:00:00.000Z',
@@ -1275,7 +1282,7 @@ export function buildSeedDatabase(): DatabaseState {
       type: 'failed_payment',
       severity: 'critical',
       title: 'Payment failed for Northstar Studio',
-      message: 'Invoice INV-2084 (₹28,320 incl. GST) failed on Visa ending 4242. Retry or send checkout link.',
+      message: 'Invoice INV-2084 (₹28,320 incl. GST) failed on Visa ending 4242. Retry in Demo Mode.',
       entity_type: 'invoice',
       entity_id: 'inv-2084',
       dedup_key: 'failed_payment:inv-2084',
@@ -1327,7 +1334,7 @@ export function buildSeedDatabase(): DatabaseState {
       type: 'payment_confirmation',
       severity: 'success',
       title: 'Payment captured from Morrow & Co.',
-      message: 'Received ₹18,644 via UPI AutoPay for invoice INV-2076.',
+      message: 'Received ₹18,644 (Demo Mode) via UPI AutoPay for invoice INV-2076.',
       entity_type: 'payment',
       entity_id: 'pay-7001',
       dedup_key: 'payment_confirmation:pay-7001',
@@ -1345,7 +1352,7 @@ export function buildSeedDatabase(): DatabaseState {
       action: 'payment.failed',
       entity_type: 'invoice',
       entity_id: 'INV-2084',
-      metadata: { reason: 'Card limit exceeded', amount: 28320 },
+      metadata: { reason: 'Card limit exceeded', amount: 28320, mode: 'demo' },
       ip_address: '103.21.124.18',
       created_at: '2026-10-29T09:15:00.000Z',
     },
@@ -1357,7 +1364,7 @@ export function buildSeedDatabase(): DatabaseState {
       action: 'payment.captured',
       entity_type: 'payment',
       entity_id: 'PAY-7001',
-      metadata: { invoice: 'INV-2076', method: 'UPI', amount: 18644 },
+      metadata: { invoice: 'INV-2076', method: 'UPI', amount: 18644, mode: 'demo' },
       ip_address: '103.21.124.18',
       created_at: '2026-10-28T09:05:00.000Z',
     },
@@ -1382,6 +1389,9 @@ export function buildSeedDatabase(): DatabaseState {
 
 class DataStore {
   private state: DatabaseState;
+  private supabaseInitialized = false;
+  private lastSupabaseSyncAt: string | null = null;
+  private pgTablesAvailable = false;
 
   constructor() {
     this.state = this.loadFromDisk();
@@ -1415,19 +1425,201 @@ class DataStore {
     }
   }
 
+  /**
+   * Synchronizes with live Supabase project:
+   * 1. Checks if PostgreSQL tables from 001_initial_schema.sql are present in PostgREST.
+   * 2. Ensures private Supabase Storage bucket ('revive-ledger-store') exists and persists/loads
+   *    the relational state directly in Supabase Cloud Storage so data persists in Supabase
+   *    even before SQL DDL migrations are manually executed in the Supabase SQL Editor.
+   * 3. Ensures seeded & signed-up users exist in Supabase Auth (`auth.users`).
+   */
+  public async initSupabasePersistence(): Promise<{
+    connected: boolean;
+    persistenceMode: string;
+    pgTablesAvailable: boolean;
+    storagePersisted: boolean;
+    authUsersSynced: boolean;
+    projectUrl: string | null;
+  }> {
+    const admin = getSupabaseAdminClient();
+    const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || null;
+    if (!admin || !url) {
+      return {
+        connected: false,
+        persistenceMode: 'local_json',
+        pgTablesAvailable: false,
+        storagePersisted: false,
+        authUsersSynced: false,
+        projectUrl: null,
+      };
+    }
+
+    try {
+      // 1. Check if PostgreSQL public.organizations table is available via PostgREST
+      const { error: orgTableErr } = await admin
+        .from('organizations')
+        .select('id')
+        .limit(1);
+      this.pgTablesAvailable = !orgTableErr;
+
+      // 2. Ensure private storage bucket exists for cloud state persistence
+      const { data: buckets } = await admin.storage.listBuckets();
+      const bucketExists = (buckets || []).some((b) => b.name === SUPABASE_BUCKET);
+      if (!bucketExists) {
+        await admin.storage.createBucket(SUPABASE_BUCKET, {
+          public: false,
+          fileSizeLimit: 10485760,
+        });
+      }
+
+      // 3. Check if remote state object exists in Supabase Storage
+      const { data: existingBlob, error: downloadErr } = await admin.storage
+        .from(SUPABASE_BUCKET)
+        .download(SUPABASE_STATE_OBJECT);
+
+      if (!downloadErr && existingBlob) {
+        const text = await existingBlob.text();
+        const remoteState = JSON.parse(text) as DatabaseState;
+        if (remoteState && Array.isArray(remoteState.organizations) && remoteState.organizations.length > 0) {
+          this.state = remoteState;
+          this.saveToDisk(this.state);
+        }
+      } else {
+        // Upload initial state to Supabase Storage
+        await this.pushStateToSupabaseStorage();
+      }
+
+      // 4. Ensure default demo users exist in Supabase Auth (`auth.users`)
+      const { data: usersList } = await admin.auth.admin.listUsers();
+      const existingEmails = new Set(
+        (usersList?.users || []).map((u) => (u.email || '').toLowerCase())
+      );
+
+      if (!existingEmails.has('aditya@brightloop.io')) {
+        await admin.auth.admin.createUser({
+          email: 'aditya@brightloop.io',
+          password: 'ReviveDemo#2026',
+          email_confirm: true,
+          user_metadata: {
+            full_name: 'Aditya Narayan',
+            organization_id: '11111111-1111-4111-8111-111111111111',
+            profile_id: '00000000-0000-4000-8000-000000000001',
+          },
+        });
+      }
+
+      if (!existingEmails.has('meera@apexcloud.io')) {
+        await admin.auth.admin.createUser({
+          email: 'meera@apexcloud.io',
+          password: 'ApexSecret#2026',
+          email_confirm: true,
+          user_metadata: {
+            full_name: 'Meera Krishnan',
+            organization_id: '99999999-9999-4999-8999-999999999999',
+            profile_id: '00000000-0000-4000-8000-000000000002',
+          },
+        });
+      }
+
+      this.supabaseInitialized = true;
+      this.lastSupabaseSyncAt = new Date().toISOString();
+
+      return {
+        connected: true,
+        persistenceMode: this.pgTablesAvailable
+          ? 'supabase_postgres_and_storage'
+          : 'supabase_cloud_storage_and_auth',
+        pgTablesAvailable: this.pgTablesAvailable,
+        storagePersisted: true,
+        authUsersSynced: true,
+        projectUrl: url,
+      };
+    } catch {
+      return {
+        connected: false,
+        persistenceMode: 'local_json',
+        pgTablesAvailable: false,
+        storagePersisted: false,
+        authUsersSynced: false,
+        projectUrl: url,
+      };
+    }
+  }
+
+  public async pushStateToSupabaseStorage(): Promise<boolean> {
+    const admin = getSupabaseAdminClient();
+    if (!admin) return false;
+    try {
+      const payload = Buffer.from(JSON.stringify(this.state), 'utf8');
+      const { error } = await admin.storage
+        .from(SUPABASE_BUCKET)
+        .upload(SUPABASE_STATE_OBJECT, payload, {
+          contentType: 'application/json',
+          upsert: true,
+        });
+      if (!error) {
+        this.lastSupabaseSyncAt = new Date().toISOString();
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  public async syncUserToSupabaseAuth(email: string, password: string, fullName: string, orgId: string, profileId: string): Promise<void> {
+    const admin = getSupabaseAdminClient();
+    if (!admin) return;
+    try {
+      await admin.auth.admin.createUser({
+        email,
+        password,
+        email_confirm: true,
+        user_metadata: {
+          full_name: fullName,
+          organization_id: orgId,
+          profile_id: profileId,
+        },
+      });
+    } catch {
+      // Ignore if user already exists in Supabase Auth
+    }
+  }
+
+  public getSupabaseStatus() {
+    const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || null;
+    const persistenceMode = this.pgTablesAvailable
+      ? 'supabase_postgres_and_storage'
+      : this.supabaseInitialized
+        ? 'supabase_cloud_storage_and_auth'
+        : 'local_json';
+    return {
+      configured: isSupabaseConfigured(),
+      connected: this.supabaseInitialized,
+      initialized: this.supabaseInitialized,
+      persistenceMode,
+      pgTablesAvailable: this.pgTablesAvailable,
+      lastSyncedAt: this.lastSupabaseSyncAt,
+      url,
+      projectUrl: url,
+    };
+  }
+
   public getState(): DatabaseState {
     return this.state;
   }
 
   public commit(): void {
     this.saveToDisk(this.state);
+    if (isSupabaseConfigured()) {
+      void this.pushStateToSupabaseStorage();
+    }
   }
 
   public resetOrganizationDemoData(organizationId: string, userId: string): void {
     const seed = buildSeedDatabase();
     const defaultOrgId = '11111111-1111-4111-8111-111111111111';
 
-    // Replace records for this organization with fresh seeded copies mapped to organizationId
     this.state.customers = this.state.customers.filter((c) => c.organization_id !== organizationId);
     this.state.plans = this.state.plans.filter((p) => p.organization_id !== organizationId);
     this.state.subscriptions = this.state.subscriptions.filter((s) => s.organization_id !== organizationId);
@@ -1566,7 +1758,6 @@ class DataStore {
     );
     if (existing) return null;
 
-    // Respect user notification preferences if available
     const orgMember = this.state.organization_members.find(
       (m) => m.organization_id === params.organization_id && m.role === 'owner'
     );
@@ -1600,10 +1791,6 @@ class DataStore {
     return notif;
   }
 
-  /**
-   * Recompute customer risk scores & statuses and run automated checks for overdue invoices,
-   * failed payments, and upcoming renewals without creating duplicate notifications.
-   */
   public syncOrganizationHealthAndNotifications(organizationId: string): {
     newNotifications: number;
     updatedCustomers: number;
@@ -1619,7 +1806,6 @@ class DataStore {
     const orgInvoices = this.state.invoices.filter((i) => i.organization_id === organizationId);
     const orgPayments = this.state.payments.filter((p) => p.organization_id === organizationId);
 
-    // 1. Check pending invoices that have crossed due_date -> mark overdue
     for (const inv of orgInvoices) {
       if (inv.status === 'pending' && new Date(inv.due_date).getTime() < now) {
         inv.status = 'overdue';
@@ -1656,7 +1842,6 @@ class DataStore {
       }
     }
 
-    // 2. Check upcoming subscription renewals within 7 days & expired trials
     for (const sub of orgSubs) {
       if (sub.status === 'trialing' && sub.trial_ends_at && new Date(sub.trial_ends_at).getTime() < now) {
         sub.status = 'active';
@@ -1682,7 +1867,6 @@ class DataStore {
       }
     }
 
-    // 3. Re-evaluate customer health & risk scores dynamically
     for (const customer of orgCustomers) {
       if (customer.status === 'archived') continue;
       const health = evaluateCustomerHealth(customer, orgSubs, orgInvoices, orgPayments);
@@ -1708,3 +1892,7 @@ class DataStore {
 }
 
 export const db = new DataStore();
+// Kick off background Supabase sync on module load if credentials are present
+if (isSupabaseConfigured()) {
+  void db.initSupabasePersistence();
+}

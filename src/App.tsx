@@ -49,8 +49,11 @@ export function App() {
   const [activeOrg, setActiveOrg] = useState<Organization | null>(null);
   const [integrations, setIntegrations] = useState({
     supabase: false,
-    openai: false,
-    razorpay: false,
+    supabaseConnected: false,
+    supabasePersistenceMode: 'local_json',
+    gemini: false,
+    geminiModel: 'gemini-3.8-flash',
+    paymentsMode: 'demo_only',
     email: false,
   });
 
@@ -418,11 +421,11 @@ export function App() {
               <span className={`env-pill ${integrations.supabase ? 'live' : ''}`}>
                 DB: {integrations.supabase ? 'Supabase' : 'Local Persist'}
               </span>
-              <span className={`env-pill ${integrations.razorpay ? 'live' : ''}`}>
-                Pay: {integrations.razorpay ? 'Razorpay' : 'Test/Demo'}
+              <span className="env-pill">
+                Pay: DEMO MODE
               </span>
-              <span className={`env-pill ${integrations.openai ? 'live' : ''}`}>
-                AI: {integrations.openai ? 'OpenAI' : 'Analytics'}
+              <span className={`env-pill ${integrations.gemini ? 'live' : ''}`}>
+                AI: {integrations.gemini ? 'Gemini' : 'Analytics'}
               </span>
             </div>
           </div>
@@ -594,7 +597,6 @@ export function App() {
               organization={activeOrg}
               payments={payments}
               invoices={invoices}
-              razorpayConfigured={integrations.razorpay}
               onDataMutated={loadWorkspaceData}
               notify={notify}
             />
@@ -603,7 +605,8 @@ export function App() {
           {page === 'Revenue intelligence' && (
             <RevenueCopilotView
               organization={activeOrg}
-              openaiConfigured={integrations.openai}
+              geminiConfigured={integrations.gemini}
+              geminiModel={integrations.geminiModel}
               overviewData={overviewData}
               customers={customers}
               onNavigate={setPage}

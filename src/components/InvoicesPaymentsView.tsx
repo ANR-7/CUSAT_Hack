@@ -108,16 +108,18 @@ export function InvoicesView({
     }
   };
 
-  const initiatePaymentCheckout = async (inv: any) => {
-    try {
-      const orderData = await apiRequest('/api/payments/razorpay/create-order', {
-        method: 'POST',
-        body: JSON.stringify({ invoice_id: inv.id }),
-      });
-      setCheckoutOrder({ ...orderData, invoice: inv });
-    } catch (err: any) {
-      notify(err.message || 'Could not initiate payment order');
-    }
+  const initiatePaymentCheckout = (inv: any) => {
+    setCheckoutOrder({
+      invoice_id: inv.id,
+      invoice_number: inv.invoice_number,
+      amount: Math.round(Number(inv.total_amount || 0) * 100),
+      currency: inv.currency || currency,
+      customer: {
+        name: inv.customer_name || 'Customer',
+        email: inv.customer_email || '',
+      },
+      invoice: inv,
+    });
   };
 
   const handleSimulatedDemoPayment = async (outcome: 'success' | 'failed') => {
@@ -374,9 +376,9 @@ export function InvoicesView({
                               type="button"
                               className="mini-action success"
                               onClick={() => initiatePaymentCheckout(inv)}
-                              title="Collect payment via Razorpay / Demo Checkout"
+                              title="Simulate payment in DEMO MODE"
                             >
-                              <CreditCard size={12} /> Pay
+                              <CreditCard size={12} /> Demo Pay
                             </button>
                           </>
                         )}
@@ -754,14 +756,14 @@ export function InvoicesView({
         </div>
       )}
 
-      {/* Razorpay Test Mode & Demo Payment Checkout Modal */}
+      {/* DEMO MODE ONLY Payment Simulator Modal */}
       {checkoutOrder && (
         <div className="modal-backdrop">
           <div className="modal">
             <div className="modal-header">
               <div>
-                <div className="eyebrow">PAYMENT GATEWAY CHECKOUT</div>
-                <h2>Settle Invoice {checkoutOrder.invoice_number}</h2>
+                <div className="eyebrow">DEMO MODE PAYMENT SIMULATOR</div>
+                <h2>Settle Invoice {checkoutOrder.invoice_number} (DEMO MODE)</h2>
               </div>
               <button
                 type="button"
@@ -782,15 +784,15 @@ export function InvoicesView({
                 }}
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-                  <span style={{ color: 'var(--text-secondary)' }}>Order Reference</span>
-                  <span className="mono">{checkoutOrder.order_id}</span>
+                  <span style={{ color: 'var(--text-secondary)' }}>Invoice Reference</span>
+                  <span className="mono">{checkoutOrder.invoice_number}</span>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
                   <span style={{ color: 'var(--text-secondary)' }}>Customer</span>
                   <strong>{checkoutOrder.customer?.name}</strong>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ color: 'var(--text-secondary)' }}>Payable Amount</span>
+                  <span style={{ color: 'var(--text-secondary)' }}>Simulated Amount</span>
                   <strong style={{ fontSize: 16 }}>
                     {formatMoneyExact(checkoutOrder.amount / 100, checkoutOrder.currency)}
                   </strong>
@@ -798,14 +800,14 @@ export function InvoicesView({
               </div>
 
               <label>
-                Payment Instrument
+                Simulated Payment Instrument (DEMO MODE)
                 <select
                   value={paymentMethod}
                   onChange={(e) => setPaymentMethod(e.target.value)}
                 >
-                  <option value="UPI">UPI (Google Pay / PhonePe / VPA)</option>
-                  <option value="Card">Corporate Credit / Debit Card</option>
-                  <option value="Bank transfer">NEFT / RTGS Netbanking</option>
+                  <option value="UPI">UPI (Simulated VPA)</option>
+                  <option value="Card">Corporate Credit / Debit Card (Simulated)</option>
+                  <option value="Bank transfer">NEFT / RTGS Netbanking (Simulated)</option>
                 </select>
               </label>
 
@@ -819,10 +821,11 @@ export function InvoicesView({
                   color: 'var(--text-primary)',
                 }}
               >
-                <strong>Explicit Demo Mode & Razorpay Test Disclosure:</strong>
+                <strong>DEMO MODE ONLY — Simulated Payment Notice:</strong>
                 <div style={{ marginTop: 4, color: 'var(--text-secondary)' }}>
-                  {checkoutOrder.notice ||
-                    'Razorpay Test Order initialized. Choose whether to simulate a successful Demo payment or a bank decline.'}
+                  Payments in Revive operate strictly in DEMO MODE. No real payment gateway orders
+                  or charges are created. Choose whether to simulate a successful settlement or a
+                  failed bank decline.
                 </div>
               </div>
 
@@ -833,7 +836,7 @@ export function InvoicesView({
                   disabled={processingPayment}
                   onClick={() => handleSimulatedDemoPayment('failed')}
                 >
-                  Simulate Bank Decline
+                  Simulate Failed Payment (Demo)
                 </button>
                 <button
                   type="button"
@@ -856,7 +859,6 @@ interface PaymentsViewProps {
   organization: Organization;
   payments: any[];
   invoices: any[];
-  razorpayConfigured: boolean;
   onDataMutated: () => void;
   notify: (msg: string) => void;
 }
@@ -865,7 +867,6 @@ export function PaymentsView({
   organization,
   payments,
   invoices,
-  razorpayConfigured,
   onDataMutated,
   notify,
 }: PaymentsViewProps) {
@@ -897,7 +898,7 @@ export function PaymentsView({
         body: JSON.stringify({ amount: Number(refundAmount) }),
       });
       setRefundingPayment(null);
-      notify(`Refund processed for ${refundingPayment.payment_number}`);
+      notify(`Demo refund processed for ${refundingPayment.payment_number}`);
       onDataMutated();
     } catch (err: any) {
       notify(err.message || 'Refund failed');
@@ -911,7 +912,10 @@ export function PaymentsView({
     (sum, p) => sum + Math.max(0, Number(p.amount) - Number(p.refunded_amount || 0)),
     0
   );
-  const verifiedCount = payments.filter((p) => p.is_verified).length;
+  const totalRefunded = payments.reduce(
+    (sum, p) => sum + Number(p.refunded_amount || 0),
+    0
+  );
   const failedPayments = payments.filter((p) => p.status === 'failed');
 
   const filteredPayments = payments.filter(
@@ -922,17 +926,17 @@ export function PaymentsView({
     <div>
       <div className="page-heading">
         <div>
-          <div className="eyebrow">PAYMENT LEDGER & RAZORPAY RECONCILIATION</div>
-          <h1>Payments</h1>
+          <div className="eyebrow">SIMULATED PAYMENT LEDGER (DEMO MODE ONLY)</div>
+          <h1>Payments (DEMO MODE)</h1>
           <p>
-            Track verified Razorpay transactions, simulated demo settlements, failed attempts, and
-            refunds.
+            Simulate successful and failed subscription payments, inspect payment receipts, and
+            test refund and reconciliation workflows in DEMO MODE.
           </p>
         </div>
         <div className="heading-actions">
-          <span className={`status-pill ${razorpayConfigured ? 'active' : 'pending'}`}>
+          <span className="status-pill pending">
             <i />
-            {razorpayConfigured ? 'Razorpay Test API Active' : 'Demo Payment Simulator Active'}
+            DEMO MODE ONLY — Simulated Payments
           </span>
           <button
             type="button"
@@ -940,7 +944,7 @@ export function PaymentsView({
             onClick={handleReconcile}
             disabled={reconciling}
           >
-            <CheckCheck size={14} /> {reconciling ? 'Reconciling...' : 'Reconcile Ledger'}
+            <CheckCheck size={14} /> {reconciling ? 'Reconciling...' : 'Reconcile Demo Ledger'}
           </button>
         </div>
       </div>
@@ -948,55 +952,53 @@ export function PaymentsView({
       <div className="metrics-grid">
         <div className="metric-card">
           <div className="metric-top">
-            <span>Net Collected Cash</span>
+            <span>Net Collected (Demo)</span>
             <div className="metric-icon green">
               <CircleDollarSign size={15} />
             </div>
           </div>
           <div className="metric-value">{formatMoney(netCollected, currency)}</div>
           <div className="metric-foot">
-            <span>{capturedPayments.length} captured transactions</span>
+            <span>{capturedPayments.length} simulated settlements</span>
           </div>
         </div>
 
         <div className="metric-card">
           <div className="metric-top">
-            <span>Verified Razorpay Payments</span>
+            <span>Successful Demo Payments</span>
             <div className="metric-icon blue">
               <ShieldCheck size={15} />
             </div>
           </div>
-          <div className="metric-value">{verifiedCount}</div>
+          <div className="metric-value">{capturedPayments.length}</div>
           <div className="metric-foot">
-            <span>HMAC-SHA256 signature verified</span>
+            <span>DEMO MODE captured receipts</span>
           </div>
         </div>
 
         <div className="metric-card">
           <div className="metric-top">
-            <span>Failed Transactions</span>
+            <span>Failed Demo Attempts</span>
             <div className="metric-icon red">
               <CreditCard size={15} />
             </div>
           </div>
           <div className="metric-value">{failedPayments.length}</div>
           <div className="metric-foot">
-            <span>Logged with bank decline codes</span>
+            <span>Simulated bank declines</span>
           </div>
         </div>
 
         <div className="metric-card">
           <div className="metric-top">
-            <span>Simulated Demo Payments</span>
+            <span>Refunded (Demo Mode)</span>
             <div className="metric-icon amber">
               <Wallet size={15} />
             </div>
           </div>
-          <div className="metric-value">
-            {payments.filter((p) => p.provider === 'simulated_demo').length}
-          </div>
+          <div className="metric-value">{formatMoney(totalRefunded, currency)}</div>
           <div className="metric-foot">
-            <span>Explicitly labelled demo records</span>
+            <span>Simulated full & partial refunds</span>
           </div>
         </div>
       </div>
@@ -1031,7 +1033,7 @@ export function PaymentsView({
                 <th>Customer</th>
                 <th>Invoice Ref</th>
                 <th>Method</th>
-                <th>Verification Source</th>
+                <th>Mode</th>
                 <th>Date</th>
                 <th>Amount</th>
                 <th>Status</th>
@@ -1045,7 +1047,7 @@ export function PaymentsView({
                     <div className="empty-state">
                       <CreditCard size={22} />
                       <strong>No payment records found</strong>
-                      <p>Settle an invoice to record a payment transaction.</p>
+                      <p>Settle an invoice in DEMO MODE to record a simulated payment transaction.</p>
                     </div>
                   </td>
                 </tr>
@@ -1060,17 +1062,9 @@ export function PaymentsView({
                     <td className="mono">{pay.invoice_number}</td>
                     <td>{pay.payment_method}</td>
                     <td>
-                      <span
-                        className={`status-pill ${
-                          pay.is_verified ? 'active' : 'pending'
-                        }`}
-                      >
+                      <span className="status-pill pending">
                         <i />
-                        {pay.is_verified
-                          ? 'Verified Razorpay'
-                          : pay.provider === 'simulated_demo'
-                            ? 'Simulated Demo'
-                            : 'Unverified'}
+                        DEMO MODE
                       </span>
                     </td>
                     <td>{formatDate(pay.paid_at || pay.created_at)}</td>

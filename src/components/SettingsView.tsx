@@ -18,8 +18,11 @@ interface SettingsViewProps {
   organization: Organization;
   integrations: {
     supabase: boolean;
-    openai: boolean;
-    razorpay: boolean;
+    supabaseConnected?: boolean;
+    supabasePersistenceMode?: string;
+    gemini: boolean;
+    geminiModel?: string;
+    paymentsMode?: string;
     email: boolean;
   };
   onUpdated: () => void;
@@ -341,25 +344,23 @@ export function SettingsView({
             <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 10 }}>
               {[
                 {
-                  name: 'Supabase PostgreSQL & RLS',
+                  name: 'Supabase PostgreSQL, Auth & Cloud Storage',
                   live: integrations.supabase,
                   desc: integrations.supabase
-                    ? 'Connected to remote Supabase project'
+                    ? `Connected to live Supabase project (${integrations.supabasePersistenceMode || 'supabase_cloud'})`
                     : 'Using persistent local relational database (server/data/db.Runtime.json)',
                 },
                 {
-                  name: 'Razorpay Checkout & Webhooks (Test Mode)',
-                  live: integrations.razorpay,
-                  desc: integrations.razorpay
-                    ? 'Live Razorpay Test API keys configured'
-                    : 'HMAC verification active; Demo Mode payment simulator enabled',
+                  name: 'Google Gemini Revenue Copilot API',
+                  live: integrations.gemini,
+                  desc: integrations.gemini
+                    ? `Connected to Google Gemini API (${integrations.geminiModel || 'gemini-3.8-flash'}) server-side`
+                    : 'GEMINI_API_KEY not set; Deterministic Analytics Engine available',
                 },
                 {
-                  name: 'OpenAI Revenue Copilot API',
-                  live: integrations.openai,
-                  desc: integrations.openai
-                    ? 'Connected to OpenAI API (server-side)'
-                    : 'OPENAI_API_KEY not set; Deterministic Analytics Engine available',
+                  name: 'Demo Payment Simulator (DEMO MODE ONLY)',
+                  live: false,
+                  desc: 'Payments operate strictly in DEMO MODE — supports simulated successful and failed payments, receipts, and refunds',
                 },
                 {
                   name: 'Transactional Email Provider',
