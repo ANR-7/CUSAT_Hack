@@ -58,9 +58,7 @@ async function generateWithGemini(params: {
 }): Promise<{ answer: string; requestedModel: string; resolvedModel: string }> {
   const apiKey = (process.env.GEMINI_API_KEY || '').trim();
   const requestedModel = (process.env.GEMINI_MODEL || 'gemini-3.8-flash').trim();
-  const candidateModels = Array.from(
-    new Set([requestedModel, 'gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash'])
-  );
+  const cleanModel = requestedModel.replace(/^models\//, '');
 
   const contents = [
     ...params.history.slice(-6).map((m) => ({
@@ -73,77 +71,59 @@ async function generateWithGemini(params: {
     },
   ];
 
-  let lastError = 'Gemini API request failed';
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+    cleanModel
+  )}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
-  for (const modelName of candidateModels) {
-    const cleanModel = modelName.replace(/^models\//, '');
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-      cleanModel
-    )}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      systemInstruction: {
+        parts: [{ text: params.systemInstruction }],
+      },
+      contents,
+      generationConfig: {
+        temperature: 0.2,
+      },
+    }),
+  });
 
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal: AbortSignal.timeout(10000),
-        body: JSON.stringify({
-          systemInstruction: {
-            parts: [{ text: params.systemInstruction }],
-          },
-          contents,
-          generationConfig: {
-            temperature: 0.2,
-            maxOutputTokens: 1024,
-          },
-        }),
-      });
-
-      if (
-        (response.status === 404 || response.status === 400) &&
-        modelName !== candidateModels[candidateModels.length - 1]
-      ) {
-        continue;
-      }
-
-      if (!response.ok) {
-        const errText = await response.text();
-        if (response.status === 429) {
-          lastError = 'Gemini API rate limit exceeded (HTTP 429). Please retry in a moment.';
-          continue;
-        }
-        lastError = `Gemini API HTTP ${response.status}: ${errText.slice(0, 300)}`;
-        continue;
-      }
-
-      const data = (await response.json()) as {
-        candidates?: Array<{
-          content?: { parts?: Array<{ text?: string }> };
-        }>;
-      };
-
-      const text =
-        data.candidates?.[0]?.content?.parts
-          ?.map((p) => p.text || '')
-          .join('')
-          .trim() || '';
-
-      if (!text) {
-        lastError = 'Gemini API returned an empty response candidate.';
-        continue;
-      }
-
-      return {
-        answer: text,
-        requestedModel,
-        resolvedModel: cleanModel,
-      };
-    } catch (err: unknown) {
-      lastError = err instanceof Error ? err.message : 'Gemini fetch error';
-      continue;
+  if (!response.ok) {
+    const errText = await response.text();
+    if (response.status === 429) {
+      throw new Error('Gemini API rate limit exceeded (HTTP 429). Please retry in a moment.');
     }
+    throw new Error(`Gemini API HTTP ${response.status}: ${errText.slice(0, 300)}`);
   }
 
-  throw new Error(lastError);
+  const data = (await response.json()) as {
+    candidates?: Array<{
+      content?: { parts?: Array<{ text?: string; thought?: boolean }> };
+    }>;
+  };
+
+  const parts = data.candidates?.[0]?.content?.parts || [];
+  const text =
+    parts
+      .filter((p) => !p.thought && typeof p.text === 'string')
+      .map((p) => p.text || '')
+      .join('')
+      .trim() ||
+    parts
+      .map((p) => p.text || '')
+      .join('')
+      .trim();
+
+  if (!text) {
+    throw new Error('Gemini API returned an empty response candidate.');
+  }
+
+  return {
+    answer: text,
+    requestedModel,
+    resolvedModel: cleanModel,
+  };
 }
 
 export function createApp() {

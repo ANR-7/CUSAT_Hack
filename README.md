@@ -2,6 +2,8 @@
 
 Revive is a full-stack subscription management, billing operations, and AI-assisted revenue intelligence platform built for recurring revenue businesses.
 
+It uses Supabase as the database and Gemini API for the AI mode.
+
 ---
 
 ## Architecture & Tech Stack
